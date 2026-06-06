@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+<!-- ─── SEO & Social sharing ─────────────────────────────────── -->
+<title>GestureAI — Real-Time Hand Gesture Detection</title>
+<meta name="description" content="Real-time hand gesture detection in your browser. No install, no signup, no data sent anywhere. Powered by MediaPipe."/>
+<meta name="author" content="GestureAI"/>
+<meta property="og:title"       content="GestureAI — Real-Time Hand Gesture Detection"/>
+<meta property="og:description" content="Detect hand gestures live in your browser using your webcam. 100% private — runs entirely on your device."/>
+<meta property="og:type"        content="website"/>
+<meta name="twitter:card"       content="summary_large_image"/>
+<meta name="twitter:title"      content="GestureAI — Hand Gesture Detection"/>
+<meta name="twitter:description"content="Live hand gesture detection in the browser. No data leaves your device."/>
+
+<!-- ─── Fonts ────────────────────────────────────────────────── -->
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Cabinet+Grotesk:wght@400;700;800&display=swap" rel="stylesheet"/>
+
+<!-- ─── MediaPipe Hands (legacy CDN — most reliable) ─────────── -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<style>
+/* ═══════════════════════════════════════════════
+   RESET & VARIABLES
+═══════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #08090d;
+  --s1:      #0f1117;
+  --s2:      #171921;
+  --border:  rgba(255,255,255,0.06);
+  --border2: rgba(255,255,255,0.13);
+  --acc:     #4f8eff;
+  --grn:     #0dffb0;
+  --ylw:     #ffd166;
+  --red:     #ff5e72;
+  --txt:     #eeeef5;
+  --mut:     #55556e;
+  --font:    'Cabinet Grotesk', sans-serif;
+  --mono:    'DM Mono', monospace;
+}
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Subtle scanline texture */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.025) 2px, rgba(0,0,0,0.025) 4px
+  );
+  pointer-events: none;
+  z-index: 999;
+}
+
+/* ═══════════════════════════════════════════════
+   HEADER
+═══════════════════════════════════════════════ */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 28px;
+  background: var(--s1);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(12px);
+}
+
+.logo {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.logo-dot { color: var(--acc); }
+
+.hbadge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mut);
+  background: var(--s2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 13px;
+  transition: border-color 0.3s;
+}
+.hbadge.live-badge { border-color: rgba(13,255,176,0.25); }
+
+.led {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--mut);
+  flex-shrink: 0;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+.led.on   { background: var(--grn); box-shadow: 0 0 8px var(--grn); }
+.led.busy { background: var(--ylw); animation: blink 0.8s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+/* ═══════════════════════════════════════════════
+   LAYOUT
+═══════════════════════════════════════════════ */
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 350px;
+  gap: 20px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px 20px 40px;
+}
+@media(max-width: 820px) {
+  .layout { grid-template-columns: 1fr; }
+  .panel  { order: -1; }
+}
+
+/* ═══════════════════════════════════════════════
+   CAMERA COLUMN
+═══════════════════════════════════════════════ */
+.cam-col { display: flex; flex-direction: column; gap: 12px; }
+
+.cam-frame {
+  position: relative;
+  background: #000;
+  border-radius: 20px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  aspect-ratio: 4/3;
+  transition: border-color 0.3s;
+}
+.cam-frame.active { border-color: rgba(13,255,176,0.2); }
+
+video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  transform: scaleX(-1);
+}
+canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  transform: scaleX(-1);
+}
+
+/* Splash screen */
+.splash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--s1);
+  transition: opacity 0.4s, visibility 0.4s;
+}
+.splash.hidden { opacity: 0; visibility: hidden; }
+.splash-icon { font-size: 56px; line-height: 1; }
+.splash h2 { font-size: 18px; font-weight: 700; }
+.splash p  { font-size: 13px; color: var(--mut); font-family: var(--mono); }
+
+/* Gesture pill overlay */
+.g-pill {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%) translateY(6px);
+  background: rgba(0,0,0,0.84);
+  border: 1.5px solid var(--grn);
+  border-radius: 999px;
+  padding: 7px 24px;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--grn);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  letter-spacing: 0.3px;
+}
+.g-pill.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Controls */
+.ctrls { display: flex; gap: 10px; align-items: center; }
+
+.btn {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 700;
+  padding: 10px 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border2);
+  cursor: pointer;
+  background: var(--s1);
+  color: var(--txt);
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  letter-spacing: 0.2px;
+}
+.btn:hover:not(:disabled) { background: var(--s2); border-color: rgba(255,255,255,0.2); }
+.btn:active:not(:disabled){ transform: scale(0.97); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn.go   { background: var(--acc); border-color: var(--acc); color: #fff; }
+.btn.go:hover:not(:disabled) { background: #6fa0ff; border-color: #6fa0ff; }
+.btn.stop { color: var(--red); border-color: rgba(255,94,114,0.2); }
+.btn.stop:hover:not(:disabled){ background: rgba(255,94,114,0.07); }
+
+/* Debug bar */
+.dbg {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mut);
+  background: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px;
+  min-height: 36px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.dbg.ok  { color: var(--grn); }
+.dbg.err { color: var(--red); }
+
+/* ═══════════════════════════════════════════════
+   RIGHT PANEL
+═══════════════════════════════════════════════ */
+.panel { display: flex; flex-direction: column; gap: 12px; }
+
+/* Gesture card */
+.gcard {
+  background: var(--s1);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 28px 22px 20px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.gcard.lit {
+  border-color: rgba(13,255,176,0.3);
+  box-shadow: 0 0 40px rgba(13,255,176,0.05);
+}
+.gcard::before {
+  content: '';
+  position: absolute;
+  top: -50px; left: 50%;
+  transform: translateX(-50%);
+  width: 240px; height: 120px;
+  background: radial-gradient(ellipse, rgba(13,255,176,0.07) 0%, transparent 70%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.gcard.lit::before { opacity: 1; }
+
+.g-big  {
+  font-size: 70px; line-height: 1;
+  display: block; margin-bottom: 14px;
+  transition: transform 0.25s;
+}
+.gcard.lit .g-big { transform: scale(1.1); }
+
+.g-tag  {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 2.5px; text-transform: uppercase;
+  color: var(--acc); margin-bottom: 6px;
+}
+.g-main {
+  font-size: 23px; font-weight: 800;
+  min-height: 34px; line-height: 1.2;
+}
+.g-desc {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--mut); line-height: 1.65;
+  min-height: 38px; margin-top: 8px;
+}
+.bar-row {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--mut); margin: 14px 0 5px;
+}
+.bar-track {
+  height: 3px; background: rgba(255,255,255,0.05);
+  border-radius: 3px; overflow: hidden;
+}
+.bar-fill {
+  height: 100%; border-radius: 3px;
+  background: var(--grn);
+  transition: width 0.18s, background 0.18s;
+}
+.mtag {
+  display: inline-block; margin-top: 12px;
+  background: rgba(79,142,255,0.08);
+  border: 1px solid rgba(79,142,255,0.18);
+  border-radius: 6px; padding: 3px 10px;
+  font-family: var(--mono); font-size: 11px;
+  color: var(--acc);
+}
+
+/* Stats */
+.stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+.stat {
+  background: var(--s1); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px 8px; text-align: center;
+}
+.sv { font-family: var(--mono); font-size: 22px; font-weight: 500; color: var(--acc); display: block; }
+.sk { font-size: 10px; color: var(--mut); text-transform: uppercase; letter-spacing: 1.5px; margin-top: 3px; display: block; }
+
+/* Guide */
+.guide {
+  background: var(--s1); border: 1px solid var(--border);
+  border-radius: 14px; padding: 14px 14px;
+}
+.guide-title {
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 2px;
+  color: var(--mut); margin-bottom: 10px;
+}
+.guide-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 6px; }
+.gi {
+  text-align: center; padding: 8px 4px 6px;
+  border-radius: 8px; background: rgba(255,255,255,0.025);
+  font-size: 10px; color: var(--mut); line-height: 1.5;
+  cursor: default; transition: background 0.15s;
+}
+.gi:hover { background: rgba(255,255,255,0.05); }
+.gi span  { font-size: 20px; display: block; margin-bottom: 2px; }
+
+/* History log */
+.log {
+  background: var(--s1); border: 1px solid var(--border);
+  border-radius: 14px; overflow: hidden; flex: 1;
+}
+.log-hdr {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+.log-hdr-title {
+  font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 2px; color: var(--mut);
+}
+.log-clr {
+  font-family: var(--mono); font-size: 11px;
+  color: var(--mut); cursor: pointer; transition: color 0.15s;
+}
+.log-clr:hover { color: var(--txt); }
+.log-body {
+  max-height: 210px; overflow-y: auto;
+  padding: 6px; display: flex; flex-direction: column; gap: 4px;
+}
+.log-body::-webkit-scrollbar { width: 3px; }
+.log-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.log-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 10px; background: rgba(255,255,255,0.02);
+  border-radius: 7px; font-size: 12px; gap: 6px;
+  animation: fadein 0.18s ease;
+}
+@keyframes fadein { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:none} }
+.log-name    { display: flex; align-items: center; gap: 7px; }
+.log-meaning { font-family: var(--mono); font-size: 11px; color: var(--grn); font-weight: 500; }
+.log-time    { font-family: var(--mono); font-size: 10px; color: var(--mut); white-space: nowrap; }
+.empty       { font-family: var(--mono); font-size: 12px; color: var(--mut); padding: 20px; text-align: center; }
+
+/* Privacy notice */
+.privacy {
+  background: rgba(13,255,176,0.04);
+  border: 1px solid rgba(13,255,176,0.1);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mut);
+  line-height: 1.6;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.privacy-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 20px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--mut);
+  border-top: 1px solid var(--border);
+}
+footer a { color: var(--acc); text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<!-- ─── HEADER ──────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    🖐️ Gesture<span class="logo-dot">AI</span>
+  </div>
+  <div class="hbadge" id="badge">
+    <div class="led" id="led"></div>
+    <span id="ledtxt">offline</span>
+  </div>
+</header>
+
+<!-- ─── MAIN LAYOUT ─────────────────────────────────── -->
+<div class="layout">
+
+  <!-- Camera column -->
+  <div class="cam-col">
+    <div class="cam-frame" id="camFrame">
+      <video id="vid" autoplay playsinline muted></video>
+      <canvas id="cvs"></canvas>
+
+      <div class="splash" id="splash">
+        <div class="splash-icon">🖐️</div>
+        <h2>GestureAI</h2>
+        <p>Click Start Camera to begin</p>
+      </div>
+
+      <div class="g-pill" id="pill"></div>
+    </div>
+
+    <div class="ctrls">
+      <button class="btn go"   id="startBtn" onclick="startCam()">▶ Start Camera</button>
+      <button class="btn stop" id="stopBtn"  onclick="stopCam()" disabled>■ Stop</button>
+    </div>
+
+    <div class="dbg" id="dbg">Ready — click Start Camera to begin.</div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="panel">
+
+    <!-- Gesture card -->
+    <div class="gcard" id="gcard">
+      <span class="g-big" id="gE">🖐️</span>
+      <div class="g-tag"  id="gN">Waiting</div>
+      <div class="g-main" id="gM">—</div>
+      <div class="g-desc" id="gD">Show your hand to the camera</div>
+      <div class="bar-row"><span>Confidence</span><span id="pct">0%</span></div>
+      <div class="bar-track"><div class="bar-fill" id="bar" style="width:0%"></div></div>
+      <div class="mtag">MediaPipe Hands · Rule-based classifier</div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat"><span class="sv" id="sH">0</span><span class="sk">Hands</span></div>
+      <div class="stat"><span class="sv" id="sC">—</span><span class="sk">Conf</span></div>
+      <div class="stat"><span class="sv" id="sT">0</span><span class="sk">Total</span></div>
+    </div>
+
+    <!-- Gesture guide -->
+    <div class="guide">
+      <div class="guide-title">Detectable Gestures</div>
+      <div class="guide-grid">
+        <div class="gi"><span>✋</span>Open Palm</div>
+        <div class="gi"><span>✊</span>Fist</div>
+        <div class="gi"><span>👍</span>Thumbs Up</div>
+        <div class="gi"><span>👎</span>Thumbs Down</div>
+        <div class="gi"><span>✌️</span>Victory</div>
+        <div class="gi"><span>☝️</span>Point Up</div>
+        <div class="gi"><span>🤟</span>I Love You</div>
+        <div class="gi"><span>🤘</span>Rock On</div>
+      </div>
+    </div>
+
+    <!-- Privacy notice -->
+    <div class="privacy">
+      <span class="privacy-icon">🔒</span>
+      <span>Your camera feed never leaves your device. All processing happens locally in your browser using MediaPipe.</span>
+    </div>
+
+    <!-- History log -->
+    <div class="log">
+      <div class="log-hdr">
+        <span class="log-hdr-title">Detection History</span>
+        <span class="log-clr" onclick="clearLog()">clear</span>
+      </div>
+      <div class="log-body" id="logBody">
+        <div class="empty">No gestures detected yet.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── FOOTER ───────────────────────────────────────── -->
+<footer>
+  Built with <a href="https://developers.google.com/mediapipe" target="_blank" rel="noopener">MediaPipe Hands</a>
+  &nbsp;·&nbsp; Runs 100% in your browser &nbsp;·&nbsp; No data sent to any server
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════
+     JAVASCRIPT
+════════════════════════════════════════════════════════ -->
+<script>
+// ─── Gesture definitions ──────────────────────────────────────
+const GESTURES = {
+  fist:       { e:'✊', n:'Closed Fist',   m:'Power!',          d:'All fingers curled inward. Strength or solidarity.' },
+  open_palm:  { e:'✋', n:'Open Palm',     m:'Stop / Hello!',   d:'All five fingers extended and spread wide.' },
+  thumb_up:   { e:'👍', n:'Thumbs Up',    m:'YES! / Great!',   d:'Thumb extended upward, all others curled.' },
+  thumb_down: { e:'👎', n:'Thumbs Down',  m:'No / Dislike',    d:'Thumb pointing down, all others curled.' },
+  victory:    { e:'✌️', n:'Victory',      m:'Peace! / Two!',   d:'Index and middle finger extended upward.' },
+  point_up:   { e:'☝️', n:'Pointing Up',  m:'Look! / No.1!',   d:'Only index finger extended straight up.' },
+  iloveyou:   { e:'🤟', n:'I Love You',   m:'Love! / Rock On', d:'Thumb, index, and pinky extended.' },
+  rock:       { e:'🤘', n:'Rock On',      m:'Rock on!',        d:'Index and pinky extended, thumb out.' },
+  none:       { e:'🖐️', n:'Detecting…',  m:'—',               d:'Keep your hand steady and well lit.' },
+};
+
+// ─── Geometric gesture classifier ────────────────────────────
+// Uses MediaPipe's 21 hand landmarks to determine which fingers
+// are extended, then maps combinations to gesture labels.
+
+function dist3(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
+}
+
+// True if finger tip is further from wrist than its PIP joint
+function isExtended(lm, tip, pip) {
+  return dist3(lm[0], lm[tip]) > dist3(lm[0], lm[pip]) * 1.05;
+}
+
+function classifyGesture(lm) {
+  const idx   = isExtended(lm, 8,  6);
+  const mid   = isExtended(lm, 12, 10);
+  const ring  = isExtended(lm, 16, 14);
+  const pinky = isExtended(lm, 20, 18);
+
+  // Thumb: tip y above IP joint y (pointing up) or below (pointing down)
+  // Also check horizontal extension for sideways thumb
+  const thumbTipY = lm[4].y;
+  const thumbIpY  = lm[3].y;
+  const thumbMcpY = lm[2].y;
+  const thumbUp   = thumbTipY < thumbIpY && thumbTipY < thumbMcpY;
+  const thumbDown = thumbTipY > thumbIpY && thumbTipY > thumbMcpY;
+  const thumbOut  = dist3(lm[4], lm[3]) > 0.07; // sideways extension
+
+  // ── All fingers down → FIST
+  if (!idx && !mid && !ring && !pinky && !thumbOut && !thumbUp && !thumbDown) {
+    return { key: 'fist', conf: 0.91 };
+  }
+
+  // ── All four fingers up → OPEN PALM
+  if (idx && mid && ring && pinky) {
+    return { key: 'open_palm', conf: 0.93 };
+  }
+
+  // ── Only thumb up, no fingers
+  if (!idx && !mid && !ring && !pinky && thumbUp) {
+    return { key: 'thumb_up', conf: 0.89 };
+  }
+
+  // ── Only thumb down, no fingers
+  if (!idx && !mid && !ring && !pinky && thumbDown) {
+    return { key: 'thumb_down', conf: 0.87 };
+  }
+
+  // ── Index + middle, ring + pinky down → VICTORY / PEACE
+  if (idx && mid && !ring && !pinky) {
+    return { key: 'victory', conf: 0.89 };
+  }
+
+  // ── Only index → POINTING UP
+  if (idx && !mid && !ring && !pinky) {
+    return { key: 'point_up', conf: 0.88 };
+  }
+
+  // ── Thumb out + index + pinky → I LOVE YOU (ASL)
+  if (thumbOut && idx && !mid && !ring && pinky) {
+    return { key: 'iloveyou', conf: 0.86 };
+  }
+
+  // ── Index + pinky (no middle/ring) → ROCK ON
+  if (idx && !mid && !ring && pinky) {
+    return { key: 'rock', conf: 0.84 };
+  }
+
+  return { key: 'none', conf: 0.55 };
+}
+
+// ─── Drawing ──────────────────────────────────────────────────
+const BONES = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17]
+];
+const TIPS = new Set([4, 8, 12, 16, 20]);
+
+function drawSkeleton(ctx, lm, W, H, boneColor) {
+  const p = i => ({ x: lm[i].x * W, y: lm[i].y * H });
+  ctx.strokeStyle = boneColor;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.75;
+  BONES.forEach(([a, b]) => {
+    const pa = p(a), pb = p(b);
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < 21; i++) {
+    const pt = p(i);
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, TIPS.has(i) ? 5.5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = TIPS.has(i) ? '#0dffb0' : '#ffffff';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+function drawBox(ctx, lm, W, H, label, color) {
+  const xs = lm.map(p => p.x * W), ys = lm.map(p => p.y * H);
+  const pad = 20;
+  const x1 = Math.min(...xs) - pad, y1 = Math.min(...ys) - pad;
+  const x2 = Math.max(...xs) + pad, y2 = Math.max(...ys) + pad;
+
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]); ctx.strokeRect(x1, y1, x2-x1, y2-y1); ctx.setLineDash([]);
+
+  const c = 13; ctx.lineWidth = 2.5;
+  [[x1,y1,1,1],[x2,y1,-1,1],[x1,y2,1,-1],[x2,y2,-1,-1]].forEach(([cx,cy,dx,dy])=>{
+    ctx.beginPath();
+    ctx.moveTo(cx+dx*c,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+dy*c);
+    ctx.stroke();
+  });
+
+  ctx.font = 'bold 12px "DM Mono", monospace';
+  const tw = ctx.measureText(label).width;
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(x1-1, y1-27, tw+14, 22);
+  ctx.fillStyle = color;
+  ctx.fillText(label, x1+6, y1-10);
+}
+
+// ─── State ────────────────────────────────────────────────────
+let handsModel = null, camera = null, stream = null;
+let totalDetected = 0, lastKey = '', debounce = null;
+let gestureLog = [];
+
+const $ = id => document.getElementById(id);
+
+function setLed(state) {
+  $('led').className = 'led' + (state ? ' '+state : '');
+  $('badge').className = 'hbadge' + (state === 'on' ? ' live-badge' : '');
+  $('ledtxt').textContent = state === 'on' ? 'live' : state === 'busy' ? 'loading…' : 'offline';
+}
+
+function setDbg(msg, cls) {
+  const el = $('dbg');
+  el.textContent = msg;
+  el.className = 'dbg' + (cls ? ' '+cls : '');
+}
+
+function updatePanel(key, conf) {
+  const g   = GESTURES[key] || GESTURES.none;
+  const pct = Math.round(conf * 100);
+  const on  = key !== 'none';
+
+  $('gE').textContent = g.e;
+  $('gN').textContent = g.n;
+  $('gM').textContent = g.m;
+  $('gD').textContent = g.d;
+  $('gcard').className = 'gcard' + (on ? ' lit' : '');
+
+  $('pct').textContent = pct + '%';
+  const fill = $('bar');
+  fill.style.width = pct + '%';
+  fill.style.background = pct > 78 ? '#0dffb0' : pct > 58 ? '#ffd166' : '#ff5e72';
+  $('sC').textContent = on ? pct + '%' : '—';
+
+  const pill = $('pill');
+  if (on) { pill.textContent = g.e + '  ' + g.m; pill.classList.add('show'); }
+  else      pill.classList.remove('show');
+}
+
+function resetPanel() {
+  $('gE').textContent = '🖐️';
+  $('gN').textContent = 'Waiting';
+  $('gM').textContent = '—';
+  $('gD').textContent = 'Show your hand clearly to the camera';
+  $('gcard').className = 'gcard';
+  $('pct').textContent = '0%';
+  $('bar').style.width = '0%';
+  $('sC').textContent = '—';
+  $('pill').classList.remove('show');
+  $('sH').textContent = '0';
+}
+
+function addLog(key, conf) {
+  totalDetected++;
+  $('sT').textContent = totalDetected;
+  const g = GESTURES[key];
+  const t = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  gestureLog.unshift({ g, conf: Math.round(conf*100), t });
+  if (gestureLog.length > 60) gestureLog.pop();
+  renderLog();
+}
+
+function renderLog() {
+  const b = $('logBody');
+  if (!gestureLog.length) { b.innerHTML = '<div class="empty">No gestures detected yet.</div>'; return; }
+  b.innerHTML = gestureLog.map(h =>
+    `<div class="log-row">
+      <span class="log-name">${h.g.e}<span style="color:var(--txt)">${h.g.n}</span></span>
+      <span class="log-meaning">${h.g.m}</span>
+      <span class="log-time">${h.conf}% &middot; ${h.t}</span>
+    </div>`
+  ).join('');
+}
+
+window.clearLog = () => {
+  gestureLog = []; totalDetected = 0; $('sT').textContent = 0; renderLog();
+};
+
+// ─── MediaPipe results callback ───────────────────────────────
+function onResults(results) {
+  const vid = $('vid');
+  const cvs = $('cvs');
+  const ctx = cvs.getContext('2d');
+
+  cvs.width  = vid.videoWidth  || 640;
+  cvs.height = vid.videoHeight || 480;
+  ctx.clearRect(0, 0, cvs.width, cvs.height);
+
+  const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+  $('sH').textContent = numHands;
+
+  if (numHands === 0) {
+    resetPanel();
+    setDbg('No hand detected — ensure good lighting and your full hand is visible in frame.');
+    lastKey = '';
+    return;
+  }
+
+  // Primary hand
+  const lm = results.multiHandLandmarks[0];
+  const { key, conf } = classifyGesture(lm);
+  const color = key !== 'none' ? '#0dffb0' : '#4f8eff';
+  const label = `${GESTURES[key].e} ${key !== 'none' ? GESTURES[key].m : 'Detecting…'} (${Math.round(conf*100)}%)`;
+
+  drawBox(ctx, lm, cvs.width, cvs.height, label, color);
+  drawSkeleton(ctx, lm, cvs.width, cvs.height, 'rgba(124,111,255,0.8)');
+
+  // Secondary hand (just skeleton, different color)
+  if (numHands > 1) {
+    drawSkeleton(ctx, results.multiHandLandmarks[1], cvs.width, cvs.height, 'rgba(255,209,102,0.7)');
+  }
+
+  updatePanel(key, conf);
+  setDbg(`Detected: ${key}  ·  confidence: ${Math.round(conf*100)}%  ·  hands in frame: ${numHands}`, key !== 'none' ? 'ok' : '');
+
+  if (key !== 'none' && key !== lastKey) {
+    lastKey = key;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => addLog(key, conf), 400);
+  } else if (key === 'none') {
+    lastKey = '';
+  }
+}
+
+// ─── Start ────────────────────────────────────────────────────
+window.startCam = async function () {
+  $('startBtn').disabled = true;
+  setLed('busy');
+  setDbg('Requesting camera access…');
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+    });
+
+    const vid = $('vid');
+    vid.srcObject = stream;
+    await vid.play();
+
+    $('splash').classList.add('hidden');
+    $('camFrame').classList.add('active');
+    setDbg('Camera ready — loading MediaPipe Hands model…');
+
+    handsModel = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+
+    handsModel.setOptions({
+      maxNumHands:            2,
+      modelComplexity:        1,   // 1 = full accuracy model
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence:  0.5,
+    });
+
+    handsModel.onResults(onResults);
+
+    camera = new Camera(vid, {
+      onFrame: async () => { await handsModel.send({ image: vid }); },
+      width: 640,
+      height: 480,
+    });
+
+    await camera.start();
+
+    setLed('on');
+    setDbg('✅ Ready! Show your hand to the camera.', 'ok');
+    $('stopBtn').disabled  = false;
+    $('startBtn').disabled = false;
+
+  } catch (err) {
+    setLed('');
+    $('splash').classList.remove('hidden');
+    $('camFrame').classList.remove('active');
+    $('startBtn').disabled = false;
+
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      setDbg('❌ Camera permission denied. Allow camera access in your browser settings and try again.', 'err');
+    } else if (err.name === 'NotFoundError') {
+      setDbg('❌ No camera found. Please connect a webcam and try again.', 'err');
+    } else if (err.message && (err.message.includes('fetch') || err.message.includes('load'))) {
+      setDbg('❌ Could not load MediaPipe model. Check your internet connection and try again.', 'err');
+    } else {
+      setDbg('❌ Error: ' + err.message, 'err');
+    }
+    console.error('[GestureAI]', err);
+  }
+};
+
+// ─── Stop ─────────────────────────────────────────────────────
+window.stopCam = function () {
+  if (camera)     { camera.stop(); camera = null; }
+  if (handsModel) { handsModel.close(); handsModel = null; }
+  if (stream)     { stream.getTracks().forEach(t => t.stop()); stream = null; }
+
+  const vid = $('vid');
+  vid.srcObject = null;
+  const cvs = $('cvs');
+  cvs.getContext('2d').clearRect(0, 0, cvs.width, cvs.height);
+
+  setLed('');
+  setDbg('Stopped.');
+  resetPanel();
+  $('stopBtn').disabled = true;
+  $('splash').classList.remove('hidden');
+  $('camFrame').classList.remove('active');
+  lastKey = '';
+};
+</script>
+</body>
+</html>
